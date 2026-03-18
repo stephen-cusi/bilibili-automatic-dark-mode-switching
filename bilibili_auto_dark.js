@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         B站原生深色模式自动切换 (悬浮窗版)
+// @name         B站原生深色模式 (拖拽悬浮+一键关闭版)
 // @namespace    http://tampermonkey.net/
-// @version      7.0
-// @description  自动切换B站原生深色模式，使用悬浮按钮配置，彻底解决多重弹窗问题
+// @version      8.0
+// @description  自动切换B站原生深色模式，支持拖拽、热更新、一键隐藏
 // @author       Gemini
 // @match        *://*.bilibili.com/*
 // @grant        GM_setValue
@@ -17,10 +17,11 @@
     window.BiliDarkModeScriptLoaded = true;
 
     let userIntervened = false;
+    let isHiddenSession = false; // 记录本次会话是否点击了关闭
 
-    // --- 核心配置 ---
+    // --- 核心逻辑 ---
     const getCfg = () => ({
-        mode: GM_getValue('auto_mode', 'system'), // system, time, off
+        mode: GM_getValue('auto_mode', 'system'),
         startTime: GM_getValue('start_time', '22:00'),
         endTime: GM_getValue('end_time', '06:00')
     });
@@ -45,76 +46,108 @@
         const themeValue = isDark ? 'dark' : 'light';
         localStorage.setItem('theme_style', themeValue);
         document.cookie = `theme_style=${themeValue}; path=/; domain=.bilibili.com; max-age=31536000`;
-
-        window.dispatchEvent(new StorageEvent('storage', {
-            key: 'theme_style',
-            newValue: themeValue,
-            storageArea: localStorage
-        }));
-
+        window.dispatchEvent(new StorageEvent('storage', { key: 'theme_style', newValue: themeValue, storageArea: localStorage }));
         const htmlEl = document.documentElement;
-        if (isDark) {
-            htmlEl.classList.add('dark');
-            htmlEl.setAttribute('data-dark-theme', 'dark');
-        } else {
-            htmlEl.classList.remove('dark');
-            htmlEl.removeAttribute('data-dark-theme');
-        }
+        if (isDark) { htmlEl.classList.add('dark'); htmlEl.setAttribute('data-dark-theme', 'dark'); }
+        else { htmlEl.classList.remove('dark'); htmlEl.removeAttribute('data-dark-theme'); }
     }
 
-    // --- 悬浮 UI 逻辑 ---
+    // --- 悬浮窗 UI 与 拖拽逻辑 ---
     function createUI() {
-        if (document.getElementById('bili-dark-mode-ctrl')) return;
+        if (document.getElementById('bili-dark-ctrl') || isHiddenSession) return;
 
         const container = document.createElement('div');
-        container.id = 'bili-dark-mode-ctrl';
+        container.id = 'bili-dark-ctrl';
+        // 读取保存的位置
+        const savedPos = GM_getValue('ui_pos', { bottom: '100px', right: '20px' });
+        
         container.style = `
-            position: fixed; bottom: 100px; right: 20px; z-index: 10000;
+            position: fixed; bottom: ${savedPos.bottom}; right: ${savedPos.right}; z-index: 20000;
             background: var(--graph_bg_regular, #fff); border: 1px solid var(--line_regular, #ccc);
-            border-radius: 8px; padding: 5px; box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-            display: flex; flex-direction: column; gap: 5px; opacity: 0.3; transition: opacity 0.3s;
+            border-radius: 10px; padding: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            display: flex; flex-direction: column; gap: 6px; cursor: move; user-select: none;
+            opacity: 0.5; transition: opacity 0.3s, transform 0.2s;
         `;
         container.onmouseenter = () => container.style.opacity = '1';
-        container.onmouseleave = () => container.style.opacity = '0.3';
+        container.onmouseleave = () => container.style.opacity = '0.5';
+
+        // 右上角关闭按钮
+        const closeBtn = document.createElement('div');
+        closeBtn.innerText = '×';
+        closeBtn.style = 'position:absolute; top:-5px; right:2px; cursor:pointer; font-size:16px; color:#999; font-weight:bold;';
+        closeBtn.onclick = (e) => {
+            e.stopPropagation();
+            container.remove();
+            isHiddenSession = true;
+        };
+        container.appendChild(closeBtn);
 
         const modes = [
-            { id: 'system', name: '自动', icon: '🌗' },
+            { id: 'system', name: '跟随系统', icon: '🌗' },
             { id: 'time', name: '定时', icon: '⏰' },
-            { id: 'off', name: '关闭', icon: '🔌' }
+            { id: 'off', name: '关闭自动', icon: '🔌' }
         ];
 
+        const btnNodes = {};
         modes.forEach(m => {
             const btn = document.createElement('button');
             btn.innerText = `${m.icon} ${m.name}`;
-            btn.style = `
-                padding: 4px 8px; border: none; background: none; cursor: pointer;
-                font-size: 12px; color: var(--text1, #333); border-radius: 4px;
-            `;
-            const updateBtnStyle = () => {
-                btn.style.background = GM_getValue('auto_mode', 'system') === m.id ? 'var(--brand_blue, #00aeec)' : 'transparent';
-                btn.style.color = GM_getValue('auto_mode', 'system') === m.id ? '#fff' : 'var(--text1, #333)';
+            btn.style = `padding: 5px 10px; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; transition: 0.2s;`;
+            
+            const refreshBtnUI = () => {
+                const isCurrent = GM_getValue('auto_mode', 'system') === m.id;
+                btn.style.background = isCurrent ? '#00aeec' : 'transparent';
+                btn.style.color = isCurrent ? '#fff' : 'var(--text1, #333)';
             };
-            updateBtnStyle();
-            btn.onclick = () => {
+            btnNodes[m.id] = refreshBtnUI;
+            refreshBtnUI();
+
+            btn.onclick = (e) => {
+                e.stopPropagation();
                 GM_setValue('auto_mode', m.id);
-                if (m.id === 'time' && m.id === GM_getValue('auto_mode')) {
-                    const start = prompt("开始时间:", GM_getValue('start_time', '22:00'));
-                    const end = prompt("结束时间:", GM_getValue('end_time', '06:00'));
+                if (m.id === 'time') {
+                    const start = prompt("开始时间 (如 22:00):", GM_getValue('start_time', '22:00'));
+                    const end = prompt("结束时间 (如 06:00):", GM_getValue('end_time', '06:00'));
                     if (start && end) { GM_setValue('start_time', start); GM_setValue('end_time', end); }
                 }
                 userIntervened = false;
                 applyTheme(shouldBeDark());
-                location.reload(); // 这里的重载是为了刷新 UI 选中状态，如果你不嫌弃 UI 不变可以去掉
+                Object.values(btnNodes).forEach(fn => fn()); // 热更新按钮颜色
             };
             container.appendChild(btn);
         });
 
+        // --- 拖拽实现 ---
+        let isDragging = false, startX, startY, startBottom, startRight;
+        container.onmousedown = (e) => {
+            isDragging = true;
+            startX = e.clientX; startY = e.clientY;
+            startBottom = parseInt(container.style.bottom);
+            startRight = parseInt(container.style.right);
+            container.style.transition = 'none';
+        };
+        document.onmousemove = (e) => {
+            if (!isDragging) return;
+            const diffX = startX - e.clientX;
+            const diffY = startY - e.clientY;
+            const newBottom = startBottom + diffY;
+            const newRight = startRight + diffX;
+            container.style.bottom = newBottom + 'px';
+            container.style.right = newRight + 'px';
+        };
+        document.onmouseup = () => {
+            if (isDragging) {
+                isDragging = false;
+                container.style.transition = 'opacity 0.3s, transform 0.2s';
+                GM_setValue('ui_pos', { bottom: container.style.bottom, right: container.style.right });
+            }
+        };
+
         document.body.appendChild(container);
     }
 
-    // --- 初始化流程 ---
-    const initialTarget = shouldBeDark();
-    if (initialTarget) {
+    // --- 执行流程 ---
+    if (shouldBeDark()) {
         document.documentElement.classList.add('dark');
         document.documentElement.setAttribute('data-dark-theme', 'dark');
     }
@@ -122,8 +155,8 @@
     window.addEventListener('DOMContentLoaded', () => {
         createUI();
         applyTheme(shouldBeDark());
-
-        // 监听手动干预
+        
+        // 拦截手动干预
         const originalSetItem = localStorage.setItem;
         localStorage.setItem = function(key, value) {
             if (key === 'theme_style') {
@@ -134,7 +167,5 @@
         };
     });
 
-    setInterval(() => {
-        if (getCfg().mode === 'time') applyTheme(shouldBeDark());
-    }, 30000);
+    setInterval(() => { if (getCfg().mode === 'time') applyTheme(shouldBeDark()); }, 30000);
 })();
