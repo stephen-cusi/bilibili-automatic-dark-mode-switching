@@ -4,6 +4,7 @@
 # Bilibili Automatic Dark Mode Switching
 
 > **让 B 站网页版原生深色模式真正实现“自动化”。不再手动切换，拒绝进站闪白。**
+> [english md](https://github.com/stephen-cusi/bilibili-automatic-dark-mode-switching/blob/main/english_md.md)
 
 ---
 
